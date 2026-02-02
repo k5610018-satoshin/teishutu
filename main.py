@@ -28,6 +28,22 @@ import yaml
 
 from loilo_checker.reporter import export_excel_report, print_console_report
 
+# デモモード用のデフォルト設定
+DEMO_CONFIG = {
+    "excel_mode": {
+        "input_dir": "./downloads",
+        "file_subject_map": {
+            "数学": "数学",
+            "英語": "英語",
+            "理科": "理科",
+        },
+    },
+    "output": {
+        "format": "both",
+        "excel_path": "未提出者一覧.xlsx",
+    },
+}
+
 
 def load_config(config_path: str) -> dict:
     """設定ファイルを読み込む。"""
@@ -113,9 +129,19 @@ def main():
         choices=["console", "excel", "both"],
         help="出力形式 (デフォルト: config.yaml の設定に従う)",
     )
+    parser.add_argument(
+        "--demo",
+        action="store_true",
+        help="サンプルデータで動作確認（設定ファイル不要）",
+    )
 
     args = parser.parse_args()
-    config = load_config(args.config)
+
+    if args.demo:
+        config = _setup_demo()
+        args.excel_mode = True
+    else:
+        config = load_config(args.config)
 
     print("=" * 60)
     print("  ロイロノート 提出箱チェッカー")
@@ -132,6 +158,14 @@ def main():
         print("\n[INFO] 未提出者は検出されませんでした")
 
     output_results(unsubmitted, config, args.output)
+
+
+def _setup_demo() -> dict:
+    """デモモードのセットアップ: サンプルExcelデータを生成して設定を返す。"""
+    print("[DEMO] サンプルデータを生成します...")
+    from create_sample_data import create_sample_excel
+    create_sample_excel("./downloads")
+    return DEMO_CONFIG
 
 
 if __name__ == "__main__":
