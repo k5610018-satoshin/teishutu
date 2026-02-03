@@ -64,12 +64,18 @@ def run_browser_mode(config: dict) -> list[dict]:
     targets = config.get("targets", [])
     if not targets:
         print("[ERROR] config.yaml の targets にチェック対象を設定してください")
+        print("[HINT] targets に教科名とロイロノートのURLを設定してください:")
+        print('  targets:')
+        print('    - subject: "情報"')
+        print('      url: "https://loilonote.app/_/10708295"')
         return []
 
     print("[INFO] ブラウザモードで提出箱をチェックします")
     print(f"[INFO] チェック対象: {len(targets)} 授業")
+    for t in targets:
+        print(f"  - {t.get('subject', '?')}: {t.get('url', '未設定')}")
 
-    return run_browser_check(config, targets)
+    return run_browser_check(config)
 
 
 def run_excel_mode(config: dict) -> list[dict]:

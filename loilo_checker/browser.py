@@ -1,19 +1,20 @@
-"""Seleniumを使ったロイロノートスクールのブラウザ自動操作モジュール。
+"""Seleniumを使ってロイロノートスクールの提出箱情報を取得するモジュール。
 
-ロイロノートスクールのWeb版にログインし、提出箱の提出状況を取得します。
-DOM構造はロイロノートのアップデートで変更される可能性があるため、
-セレクタが合わない場合はブラウザのDevToolsで確認し調整してください。
+動作の流れ:
+  1. Chromeブラウザを起動し、ロイロノートのログインページを開く
+  2. ユーザーが手動でログインするのを待つ（自動ログインも可）
+  3. 設定された各授業ページに移動し、提出箱タブを開く
+  4. 提出箱ごとに生徒の提出状況をページから読み取る
+  5. 未提出者のリストを返す
 
-使い方:
-    1. ブラウザで https://loilonote.app にアクセス
-    2. F12 でDevToolsを開く
-    3. 要素を選択して実際のクラス名・IDを確認
-    4. 必要に応じて本ファイルのセレクタ定数を修正
+注意:
+  - ロイロノートの画面構造（DOM）はアップデートで変わる可能性があります
+  - セレクタが合わない場合は、ブラウザのDevTools (F12) で実際の要素を確認し、
+    本ファイル内のセレクタ定数を調整してください
 """
 
-import os
+import json
 import time
-from dataclasses import dataclass, field
 
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
@@ -28,61 +29,27 @@ from selenium.common.exceptions import (
 )
 
 # ============================================================
-# セレクタ定数（ロイロノートのDOM構造に合わせて調整してください）
+# ロイロノートのURL
 # ============================================================
-# ログインページ
-LOGIN_URL = "https://loilonote.app/login"
-SELECTOR_SCHOOL_ID_INPUT = 'input[name="school_id"], input[placeholder*="学校"], #school-id'
-SELECTOR_USERNAME_INPUT = 'input[name="username"], input[placeholder*="ユーザー"], #username'
-SELECTOR_PASSWORD_INPUT = 'input[name="password"], input[type="password"], #password'
-SELECTOR_LOGIN_BUTTON = 'button[type="submit"], .login-button, button:has-text("ログイン")'
-
-# 授業一覧
-SELECTOR_CLASS_LIST = '.class-list, .course-list, [class*="class-item"], [class*="course"]'
-SELECTOR_CLASS_NAME = '.class-name, .course-name, [class*="title"]'
-
-# 提出箱
-SELECTOR_SUBMISSION_BOX_TAB = '[class*="submission"], [class*="teishutsu"], .submission-tab'
-SELECTOR_SUBMISSION_BOX_LIST = '[class*="submission-box"], [class*="box-item"]'
-SELECTOR_SUBMISSION_BOX_NAME = '[class*="box-name"], [class*="title"]'
-
-# 生徒一覧・提出状況
-SELECTOR_STUDENT_LIST = '[class*="student-list"], [class*="member-list"]'
-SELECTOR_STUDENT_ITEM = '[class*="student-item"], [class*="member-item"]'
-SELECTOR_STUDENT_NAME = '[class*="student-name"], [class*="member-name"], [class*="name"]'
-SELECTOR_SUBMIT_STATUS = '[class*="status"], [class*="submitted"], [class*="submit-state"]'
-
-
-@dataclass
-class SubmissionInfo:
-    """提出箱の提出状況を保持するクラス。"""
-    subject: str
-    class_name: str
-    submission_box: str
-    student_name: str
-    submitted: bool
-
-
-@dataclass
-class BrowserConfig:
-    """ブラウザ設定。"""
-    headless: bool = False
-    wait_timeout: int = 15
-    chromedriver_path: str = ""
+LOILO_BASE_URL = "https://loilonote.app"
+LOILO_LOGIN_URL = "https://loilonote.app/login"
 
 
 class LoiLoNoteChecker:
-    """ロイロノートスクールの提出箱チェッカー。"""
+    """ロイロノートスクールの提出箱をブラウザで確認するクラス。"""
 
-    def __init__(self, config: BrowserConfig):
-        self.config = config
+    def __init__(self, headless: bool = False, wait_timeout: int = 20,
+                 chromedriver_path: str = ""):
+        self.headless = headless
+        self.wait_timeout = wait_timeout
+        self.chromedriver_path = chromedriver_path
         self.driver = None
         self.wait = None
 
     def start(self):
-        """ブラウザを起動する。"""
+        """Chromeブラウザを起動する。"""
         options = Options()
-        if self.config.headless:
+        if self.headless:
             options.add_argument("--headless=new")
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
@@ -90,12 +57,12 @@ class LoiLoNoteChecker:
         options.add_argument("--lang=ja-JP")
 
         service_kwargs = {}
-        if self.config.chromedriver_path:
-            service_kwargs["executable_path"] = self.config.chromedriver_path
-
+        if self.chromedriver_path:
+            service_kwargs["executable_path"] = self.chromedriver_path
         service = Service(**service_kwargs)
+
         self.driver = webdriver.Chrome(service=service, options=options)
-        self.wait = WebDriverWait(self.driver, self.config.wait_timeout)
+        self.wait = WebDriverWait(self.driver, self.wait_timeout)
         print("[INFO] ブラウザを起動しました")
 
     def quit(self):
@@ -105,301 +72,376 @@ class LoiLoNoteChecker:
             self.driver = None
             print("[INFO] ブラウザを終了しました")
 
-    def login(self, school_id: str, username: str, password: str):
-        """ロイロノートにログインする。
+    # ----------------------------------------------------------
+    # ログイン
+    # ----------------------------------------------------------
+    def login_manual(self):
+        """ログインページを開き、ユーザーの手動ログインを待つ。"""
+        print(f"[INFO] ログインページを開きます: {LOILO_LOGIN_URL}")
+        self.driver.get(LOILO_LOGIN_URL)
+        print()
+        print("=" * 55)
+        print("  ブラウザでロイロノートにログインしてください。")
+        print("  ログインが完了したら、ここに戻って Enter を押してください。")
+        print("=" * 55)
+        input("\n  >>> Enter を押して続行...")
+        print(f"[INFO] 現在のURL: {self.driver.current_url}")
 
-        注意: ロイロノートのログイン画面の構造に依存します。
-        ログインに失敗する場合は、DevToolsでセレクタを確認してください。
+    def login_auto(self, school_id: str, username: str, password: str):
+        """ログイン情報を使って自動ログインを試みる。
+
+        ロイロノートのログイン画面の入力フィールドを自動入力します。
+        DOM構造が変更されている場合は手動ログインに切り替えてください。
         """
-        print(f"[INFO] ログインページにアクセス中: {LOGIN_URL}")
-        self.driver.get(LOGIN_URL)
-        time.sleep(2)
+        print(f"[INFO] 自動ログインを試みます: {LOILO_LOGIN_URL}")
+        self.driver.get(LOILO_LOGIN_URL)
+        time.sleep(3)
 
         try:
-            # 学校IDの入力
-            school_input = self._find_element(SELECTOR_SCHOOL_ID_INPUT)
-            if school_input:
-                school_input.clear()
-                school_input.send_keys(school_id)
-                print("[INFO] 学校IDを入力しました")
+            # ロイロノートのログインフォーム要素を探す
+            inputs = self.driver.find_elements(By.CSS_SELECTOR, "input")
+            if len(inputs) >= 3:
+                inputs[0].clear()
+                inputs[0].send_keys(school_id)
+                inputs[1].clear()
+                inputs[1].send_keys(username)
+                inputs[2].clear()
+                inputs[2].send_keys(password)
+                print("[INFO] ログイン情報を入力しました")
 
-            # ユーザー名の入力
-            username_input = self._find_element(SELECTOR_USERNAME_INPUT)
-            if username_input:
-                username_input.clear()
-                username_input.send_keys(username)
-                print("[INFO] ユーザー名を入力しました")
+                # ログインボタンをクリック
+                buttons = self.driver.find_elements(By.CSS_SELECTOR, "button")
+                for btn in buttons:
+                    text = btn.text.strip()
+                    if "ログイン" in text or "login" in text.lower():
+                        btn.click()
+                        print("[INFO] ログインボタンをクリックしました")
+                        break
 
-            # パスワードの入力
-            password_input = self._find_element(SELECTOR_PASSWORD_INPUT)
-            if password_input:
-                password_input.clear()
-                password_input.send_keys(password)
-                print("[INFO] パスワードを入力しました")
+                time.sleep(5)
+                print(f"[INFO] ログイン後URL: {self.driver.current_url}")
+            else:
+                print("[WARN] ログインフォームの検出に失敗しました。手動ログインに切り替えます。")
+                self.login_manual()
 
-            # ログインボタンをクリック
-            login_btn = self._find_element(SELECTOR_LOGIN_BUTTON)
-            if login_btn:
-                login_btn.click()
-                print("[INFO] ログインボタンをクリックしました")
+        except Exception as e:
+            print(f"[WARN] 自動ログイン失敗: {e}")
+            print("[WARN] 手動ログインに切り替えます。")
+            self.login_manual()
 
-            time.sleep(3)
-            print(f"[INFO] ログイン後のURL: {self.driver.current_url}")
-
-        except TimeoutException:
-            print("[ERROR] ログインページの要素が見つかりませんでした")
-            print("[HINT] ブラウザのDevTools (F12) でセレクタを確認してください")
-            raise
-
-    def get_submission_status(self, targets: list[dict]) -> list[SubmissionInfo]:
-        """指定された授業・提出箱の提出状況を取得する。
-
-        注意: この関数はロイロノートのDOM構造に強く依存します。
-        DOM構造が変更された場合はセレクタの調整が必要です。
-
-        実際のDOM構造が不明なため、以下の処理は概念的な実装です。
-        ロイロノートの画面を実際に確認し、セレクタを調整してください。
+    # ----------------------------------------------------------
+    # 提出箱チェック
+    # ----------------------------------------------------------
+    def check_class_url(self, class_url: str, subject: str) -> list[dict]:
+        """指定されたクラスURLにアクセスして提出箱の情報を取得する。
 
         Args:
-            targets: チェック対象のリスト
-                [{"subject": "数学", "class_name": "1年A組",
-                  "submission_boxes": ["テスト1"]}, ...]
+            class_url: ロイロノートのクラスURL
+                例: https://loilonote.app/_/10708295
+            subject: 教科名（レポート表示用）
 
         Returns:
-            提出状況のリスト
+            未提出者情報のリスト
         """
-        all_results = []
+        print(f"\n[INFO] === {subject} のページにアクセス中 ===")
+        print(f"[INFO] URL: {class_url}")
 
-        for target in targets:
-            subject = target["subject"]
-            class_name = target["class_name"]
-            box_filter = target.get("submission_boxes", [])
+        # 提出箱タブ付きのURLに移動
+        if "tab=" not in class_url:
+            class_url = class_url.rstrip("/") + "?tab=standardNoteList"
+        self.driver.get(class_url)
+        time.sleep(3)
 
-            print(f"\n[INFO] === {subject} ({class_name}) の提出箱をチェック中 ===")
+        # ページの読み込みを待機
+        self._wait_for_page_load()
 
-            try:
-                results = self._check_class_submissions(
-                    subject, class_name, box_filter
-                )
-                all_results.extend(results)
-            except (TimeoutException, NoSuchElementException) as e:
-                print(f"[WARN] {subject} ({class_name}) のチェックに失敗: {e}")
-                print("[HINT] セレクタの調整が必要な可能性があります")
-                continue
+        # ページの内容を解析して提出箱情報を取得
+        return self._extract_submission_data(subject)
 
-        return all_results
-
-    def _check_class_submissions(
-        self, subject: str, class_name: str, box_filter: list[str]
-    ) -> list[SubmissionInfo]:
-        """特定の授業の提出箱をチェックする。"""
-        results = []
-
-        # 授業を選択（実際のナビゲーションはDOM構造に依存）
-        # ロイロノートの画面で授業一覧 → 対象授業 → 提出箱タブの順に遷移
-        class_elements = self._find_elements(SELECTOR_CLASS_LIST)
-        target_class = None
-
-        for elem in class_elements:
-            try:
-                name_elem = elem.find_element(By.CSS_SELECTOR, SELECTOR_CLASS_NAME)
-                if class_name in name_elem.text or subject in name_elem.text:
-                    target_class = elem
-                    break
-            except NoSuchElementException:
-                if class_name in elem.text or subject in elem.text:
-                    target_class = elem
-                    break
-
-        if target_class is None:
-            print(f"[WARN] 授業 '{class_name} - {subject}' が見つかりません")
-            return results
-
-        target_class.click()
-        time.sleep(2)
-
-        # 提出箱タブをクリック
-        submission_tab = self._find_element(SELECTOR_SUBMISSION_BOX_TAB)
-        if submission_tab:
-            submission_tab.click()
-            time.sleep(2)
-
-        # 提出箱一覧を取得
-        box_elements = self._find_elements(SELECTOR_SUBMISSION_BOX_LIST)
-        print(f"[INFO] {len(box_elements)} 件の提出箱を検出")
-
-        for box_elem in box_elements:
-            try:
-                box_name_elem = box_elem.find_element(
-                    By.CSS_SELECTOR, SELECTOR_SUBMISSION_BOX_NAME
-                )
-                box_name = box_name_elem.text.strip()
-            except NoSuchElementException:
-                box_name = box_elem.text.strip()
-
-            if not box_name:
-                continue
-
-            # フィルタが設定されている場合、対象の提出箱のみチェック
-            if box_filter and box_name not in box_filter:
-                continue
-
-            print(f"[INFO] 提出箱 '{box_name}' をチェック中...")
-            box_elem.click()
-            time.sleep(2)
-
-            # 生徒の提出状況を確認
-            student_results = self._get_student_statuses(
-                subject, class_name, box_name
+    def _wait_for_page_load(self):
+        """ページの主要コンテンツが読み込まれるのを待つ。"""
+        try:
+            self.wait.until(
+                lambda d: d.execute_script("return document.readyState") == "complete"
             )
-            results.extend(student_results)
+            time.sleep(2)
+        except TimeoutException:
+            print("[WARN] ページ読み込みのタイムアウト。続行します。")
 
-            # 提出箱一覧に戻る
-            self.driver.back()
-            time.sleep(1)
+    def _extract_submission_data(self, subject: str) -> list[dict]:
+        """現在のページから提出箱と生徒の提出状況を抽出する。
 
-        return results
-
-    def _get_student_statuses(
-        self, subject: str, class_name: str, box_name: str
-    ) -> list[SubmissionInfo]:
-        """提出箱内の生徒ごとの提出状況を取得する。"""
-        results = []
-
-        student_items = self._find_elements(SELECTOR_STUDENT_ITEM)
-        print(f"[INFO]   生徒数: {len(student_items)}")
-
-        for item in student_items:
-            try:
-                name_elem = item.find_element(By.CSS_SELECTOR, SELECTOR_STUDENT_NAME)
-                student_name = name_elem.text.strip()
-            except NoSuchElementException:
-                continue
-
-            # 提出状況を判定
-            submitted = self._check_if_submitted(item)
-
-            results.append(SubmissionInfo(
-                subject=subject,
-                class_name=class_name,
-                submission_box=box_name,
-                student_name=student_name,
-                submitted=submitted,
-            ))
-
-        return results
-
-    def _check_if_submitted(self, student_element) -> bool:
-        """生徒の要素から提出済みかどうかを判定する。
-
-        判定方法（優先度順）:
-        1. status要素のテキストに「提出済」が含まれるか
-        2. 要素のclass名に「submitted」が含まれるか
-        3. 提出カードのプレビューが存在するか
+        ロイロノートの画面構造に基づいてデータを取得します。
+        DOMが変更された場合、この部分の修正が必要になります。
         """
+        unsubmitted = []
+
+        # JavaScript でページ内の情報を抽出
+        # 方法1: ページ内のテキストとDOM構造から推定
+        page_data = self._extract_via_dom(subject)
+        if page_data:
+            return page_data
+
+        # 方法2: ネットワークリクエストのレスポンスから取得を試みる
+        page_data = self._extract_via_page_text(subject)
+        if page_data:
+            return page_data
+
+        print("[WARN] 提出箱データの自動取得に失敗しました")
+        print("[HINT] 手動モードに切り替えます")
+        return self._extract_manual(subject)
+
+    def _extract_via_dom(self, subject: str) -> list[dict]:
+        """DOMの構造を解析してデータを取得する。"""
+        unsubmitted = []
+
         try:
-            status_elem = student_element.find_element(
-                By.CSS_SELECTOR, SELECTOR_SUBMIT_STATUS
-            )
-            status_text = status_elem.text.strip()
-            if "提出済" in status_text or "submitted" in status_text.lower():
-                return True
-            if "未提出" in status_text:
-                return False
-        except NoSuchElementException:
-            pass
+            # ページ内の全要素のテキストとクラス名を取得するJS
+            data = self.driver.execute_script("""
+                const result = {
+                    boxes: [],
+                    url: window.location.href,
+                    title: document.title
+                };
 
-        # class名による判定
-        class_attr = student_element.get_attribute("class") or ""
-        if "submitted" in class_attr or "done" in class_attr:
-            return True
-        if "unsubmitted" in class_attr or "not-submitted" in class_attr:
-            return False
+                // 提出箱の要素を探索
+                // ロイロノートでは提出箱名と提出状況が表示される
+                const allElements = document.querySelectorAll('*');
+                const texts = [];
+                for (const el of allElements) {
+                    const text = el.innerText || el.textContent || '';
+                    const cls = el.className || '';
+                    const tag = el.tagName;
+                    if (text.length > 0 && text.length < 200) {
+                        texts.push({
+                            tag: tag,
+                            class: typeof cls === 'string' ? cls : '',
+                            text: text.trim().substring(0, 100),
+                            childCount: el.children.length
+                        });
+                    }
+                }
+                result.pageTexts = texts.slice(0, 500);
 
-        # カードプレビューの有無で判定
+                // 提出状況に関連しそうな要素を特定
+                const statusKeywords = ['提出', '未提出', 'submitted', '名前', '氏名'];
+                result.relevantElements = [];
+                for (const el of allElements) {
+                    const text = (el.innerText || '').trim();
+                    const cls = (typeof el.className === 'string' ? el.className : '');
+                    const hasKeyword = statusKeywords.some(kw =>
+                        text.includes(kw) || cls.includes(kw)
+                    );
+                    if (hasKeyword && text.length < 500) {
+                        result.relevantElements.push({
+                            tag: el.tagName,
+                            class: cls.substring(0, 100),
+                            text: text.substring(0, 200),
+                            html: el.outerHTML.substring(0, 300)
+                        });
+                    }
+                }
+
+                return JSON.stringify(result);
+            """)
+
+            if data:
+                parsed = json.loads(data)
+                print(f"[DEBUG] ページタイトル: {parsed.get('title', '不明')}")
+                print(f"[DEBUG] 関連要素数: {len(parsed.get('relevantElements', []))}")
+
+                # 関連要素から提出箱名と未提出者を抽出
+                return self._parse_dom_data(parsed, subject)
+
+        except Exception as e:
+            print(f"[DEBUG] DOM解析エラー: {e}")
+
+        return unsubmitted
+
+    def _parse_dom_data(self, data: dict, subject: str) -> list[dict]:
+        """DOM解析結果から未提出者を特定する。"""
+        unsubmitted = []
+        relevant = data.get("relevantElements", [])
+
+        current_box_name = ""
+        for elem in relevant:
+            text = elem.get("text", "")
+            # 提出箱名の候補
+            if "提出箱" in text or len(text) < 50:
+                lines = text.split("\n")
+                for line in lines:
+                    line = line.strip()
+                    if line and "未提出" not in line and len(line) < 40:
+                        current_box_name = line
+                        break
+
+            # 未提出者の検出
+            if "未提出" in text:
+                lines = text.split("\n")
+                for line in lines:
+                    line = line.strip()
+                    if line and "未提出" not in line and len(line) < 20:
+                        unsubmitted.append({
+                            "subject": subject,
+                            "submission_box": current_box_name or "不明",
+                            "student_name": line,
+                        })
+
+        return unsubmitted
+
+    def _extract_via_page_text(self, subject: str) -> list[dict]:
+        """ページ全体のテキストから情報を抽出する（フォールバック）。"""
         try:
-            student_element.find_element(
-                By.CSS_SELECTOR, '[class*="card"], [class*="preview"], img'
-            )
-            return True
-        except NoSuchElementException:
-            return False
+            body_text = self.driver.find_element(By.TAG_NAME, "body").text
+            if "提出" not in body_text:
+                return []
 
-    def _find_element(self, selector: str):
-        """複数セレクタからマッチする要素を探す（カンマ区切り対応）。"""
-        selectors = [s.strip() for s in selector.split(",")]
-        for sel in selectors:
-            try:
-                elem = self.wait.until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, sel))
-                )
-                return elem
-            except (TimeoutException, WebDriverException):
-                continue
-        return None
+            print("[DEBUG] ページテキストから提出状況を解析中...")
+            # ページテキストの先頭部分を表示（デバッグ用）
+            lines = [l.strip() for l in body_text.split("\n") if l.strip()]
+            print(f"[DEBUG] ページ行数: {len(lines)}")
+            for line in lines[:20]:
+                print(f"  | {line[:80]}")
+            if len(lines) > 20:
+                print(f"  ... (残り{len(lines) - 20}行)")
 
-    def _find_elements(self, selector: str) -> list:
-        """複数セレクタからマッチする要素リストを探す。"""
-        selectors = [s.strip() for s in selector.split(",")]
-        for sel in selectors:
-            try:
-                self.wait.until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, sel))
-                )
-                return self.driver.find_elements(By.CSS_SELECTOR, sel)
-            except (TimeoutException, WebDriverException):
-                continue
+        except Exception as e:
+            print(f"[DEBUG] テキスト抽出エラー: {e}")
+
         return []
 
+    def _extract_manual(self, subject: str) -> list[dict]:
+        """ユーザーにブラウザ上で提出箱を確認してもらい、手動入力する。"""
+        unsubmitted = []
+        print()
+        print("-" * 55)
+        print("  自動取得できなかったため、手動入力モードです。")
+        print("  ブラウザで提出箱を確認しながら入力してください。")
+        print("  入力が終わったら空欄で Enter を押してください。")
+        print("-" * 55)
 
-def run_browser_check(config: dict, targets: list[dict]) -> list[dict]:
-    """ブラウザ自動操作で提出状況をチェックするメイン関数。
+        while True:
+            print()
+            box_name = input("  提出箱名 (空欄で終了): ").strip()
+            if not box_name:
+                break
+
+            print(f"  【{box_name}】の未提出者名を入力 (空欄で次の提出箱へ):")
+            while True:
+                name = input("    生徒名: ").strip()
+                if not name:
+                    break
+                unsubmitted.append({
+                    "subject": subject,
+                    "submission_box": box_name,
+                    "student_name": name,
+                })
+
+        return unsubmitted
+
+    # ----------------------------------------------------------
+    # ページ構造の調査ヘルパー（初回セットアップ時に使用）
+    # ----------------------------------------------------------
+    def inspect_page(self):
+        """現在のページのDOM構造を調査してファイルに出力する。
+
+        初回セットアップ時にロイロノートの画面構造を確認するために使用。
+        出力ファイルを確認して、セレクタの調整に役立ててください。
+        """
+        print("[INFO] ページ構造を調査中...")
+
+        data = self.driver.execute_script("""
+            const result = [];
+            function inspect(el, depth) {
+                if (depth > 5) return;
+                const cls = typeof el.className === 'string' ? el.className : '';
+                const id = el.id || '';
+                const text = (el.innerText || '').trim().substring(0, 50);
+                const tag = el.tagName;
+
+                if (cls || id || text) {
+                    result.push({
+                        depth: depth,
+                        tag: tag,
+                        id: id,
+                        class: cls,
+                        text: text,
+                        children: el.children.length
+                    });
+                }
+                for (const child of el.children) {
+                    inspect(child, depth + 1);
+                }
+            }
+            inspect(document.body, 0);
+            return JSON.stringify(result.slice(0, 1000));
+        """)
+
+        with open("page_structure.json", "w", encoding="utf-8") as f:
+            f.write(data)
+
+        print("[INFO] page_structure.json に出力しました")
+        print("[HINT] このファイルを確認して、提出箱関連の要素を特定してください")
+        return json.loads(data)
+
+
+def run_browser_check(config: dict) -> list[dict]:
+    """ブラウザでロイロノートの提出箱をチェックするメイン関数。
 
     Args:
         config: 設定辞書 (config.yaml の内容)
-        targets: チェック対象リスト
 
     Returns:
         未提出者情報のリスト
     """
-    browser_config = BrowserConfig(
-        headless=config.get("browser", {}).get("headless", False),
-        wait_timeout=config.get("browser", {}).get("wait_timeout", 15),
-        chromedriver_path=config.get("browser", {}).get("chromedriver_path", ""),
+    browser_cfg = config.get("browser", {})
+    login_cfg = config.get("login", {})
+    targets = config.get("targets", [])
+
+    checker = LoiLoNoteChecker(
+        headless=browser_cfg.get("headless", False),
+        wait_timeout=browser_cfg.get("wait_timeout", 20),
+        chromedriver_path=browser_cfg.get("chromedriver_path", ""),
     )
 
-    login_info = config.get("login", {})
-    if not all([login_info.get("school_id"), login_info.get("username"),
-                login_info.get("password")]):
-        print("[ERROR] config.yaml にログイン情報を設定してください")
-        return []
-
-    checker = LoiLoNoteChecker(browser_config)
-    unsubmitted = []
+    all_unsubmitted = []
 
     try:
         checker.start()
-        checker.login(
-            login_info["school_id"],
-            login_info["username"],
-            login_info["password"],
-        )
 
-        results = checker.get_submission_status(targets)
+        # ログイン
+        school_id = login_cfg.get("school_id", "")
+        username = login_cfg.get("username", "")
+        password = login_cfg.get("password", "")
 
-        # 未提出者のみ抽出
-        for r in results:
-            if not r.submitted:
-                unsubmitted.append({
-                    "subject": r.subject,
-                    "submission_box": r.submission_box,
-                    "student_name": r.student_name,
-                    "class_name": r.class_name,
-                })
+        if school_id and username and password:
+            checker.login_auto(school_id, username, password)
+        else:
+            checker.login_manual()
+
+        # 各クラスの提出箱をチェック
+        for target in targets:
+            subject = target.get("subject", "不明")
+            class_url = target.get("url", "")
+
+            if not class_url:
+                print(f"[WARN] {subject}: URL が設定されていません。スキップします。")
+                continue
+
+            results = checker.check_class_url(class_url, subject)
+            all_unsubmitted.extend(results)
+            print(f"[INFO] {subject}: 未提出 {len(results)} 件")
+
+        # ページ構造の調査（デバッグ用）
+        if config.get("debug", False):
+            checker.inspect_page()
 
     except WebDriverException as e:
-        print(f"[ERROR] ブラウザ操作でエラーが発生しました: {e}")
+        print(f"[ERROR] ブラウザエラー: {e}")
+    except KeyboardInterrupt:
+        print("\n[INFO] 中断されました")
     finally:
+        input("\n  結果を確認したら Enter を押してブラウザを閉じます...")
         checker.quit()
 
-    return unsubmitted
+    return all_unsubmitted
